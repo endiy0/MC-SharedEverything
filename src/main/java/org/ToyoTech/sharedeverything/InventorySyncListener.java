@@ -1,10 +1,13 @@
 package org.ToyoTech.sharedeverything;
 
-import org.bukkit.Material;
+import io.papermc.paper.event.player.PlayerInventorySlotChangeEvent;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.block.Action;
+import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
@@ -13,7 +16,9 @@ import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerItemBreakEvent;
 import org.bukkit.event.player.PlayerItemConsumeEvent;
 import org.bukkit.event.player.PlayerItemDamageEvent;
+import org.bukkit.event.player.PlayerInteractAtEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
@@ -57,10 +62,37 @@ final class InventorySyncListener implements Listener {
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onInventorySlotChange(PlayerInventorySlotChangeEvent event) {
+        Player player = event.getPlayer();
+        if (!plugin.isInventorySyncEnabled() || plugin.isSyncing(player)) {
+            return;
+        }
+        plugin.scheduleInventorySnapshot(player);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onEntityPickup(EntityPickupItemEvent event) {
         if (!(event.getEntity() instanceof Player player)) {
             return;
         }
+        if (!plugin.isInventorySyncEnabled() || plugin.isSyncing(player)) {
+            return;
+        }
+        plugin.scheduleInventorySnapshot(player);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBlockPlace(BlockPlaceEvent event) {
+        Player player = event.getPlayer();
+        if (!plugin.isInventorySyncEnabled() || plugin.isSyncing(player)) {
+            return;
+        }
+        plugin.scheduleInventorySnapshot(player);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBlockBreak(BlockBreakEvent event) {
+        Player player = event.getPlayer();
         if (!plugin.isInventorySyncEnabled() || plugin.isSyncing(player)) {
             return;
         }
@@ -113,6 +145,30 @@ final class InventorySyncListener implements Listener {
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onInteractEntity(PlayerInteractEntityEvent event) {
+        Player player = event.getPlayer();
+        if (!plugin.isInventorySyncEnabled() || plugin.isSyncing(player)) {
+            return;
+        }
+        if (event.getPlayer().getInventory().getItem(event.getHand()) == null) {
+            return;
+        }
+        plugin.scheduleInventorySnapshot(player);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onInteractAtEntity(PlayerInteractAtEntityEvent event) {
+        Player player = event.getPlayer();
+        if (!plugin.isInventorySyncEnabled() || plugin.isSyncing(player)) {
+            return;
+        }
+        if (event.getPlayer().getInventory().getItem(event.getHand()) == null) {
+            return;
+        }
+        plugin.scheduleInventorySnapshot(player);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPlayerInteract(PlayerInteractEvent event) {
         if (!event.hasItem()) {
             return;
@@ -121,8 +177,8 @@ final class InventorySyncListener implements Listener {
         if (!plugin.isInventorySyncEnabled() || plugin.isSyncing(player)) {
             return;
         }
-        Material type = event.getItem().getType();
-        if (isArmorItem(type)) {
+        Action action = event.getAction();
+        if (action == Action.RIGHT_CLICK_AIR || action == Action.RIGHT_CLICK_BLOCK) {
             plugin.scheduleInventorySnapshot(player);
         }
     }
@@ -149,13 +205,5 @@ final class InventorySyncListener implements Listener {
         plugin.runNextTick(() -> plugin.applyGlobalInventoryToPlayer(player));
     }
 
-    private boolean isArmorItem(Material material) {
-        String name = material.name();
-        return name.endsWith("_HELMET")
-                || name.endsWith("_CHESTPLATE")
-                || name.endsWith("_LEGGINGS")
-                || name.endsWith("_BOOTS")
-                || name.equals("ELYTRA");
-    }
 }
 
