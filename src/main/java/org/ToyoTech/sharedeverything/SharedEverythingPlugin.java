@@ -3,6 +3,7 @@ package org.ToyoTech.sharedeverything;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import org.bukkit.Bukkit;
+import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.PluginCommand;
@@ -24,6 +25,7 @@ public final class SharedEverythingPlugin extends JavaPlugin {
     private final Map<NamespacedKey, Set<String>> globalAdvancements = new HashMap<>();
     private final Map<UUID, Integer> syncDepth = new HashMap<>();
     private final Set<UUID> pendingInventorySnapshots = new HashSet<>();
+    private final Set<UUID> pendingInventoryApplies = new HashSet<>();
 
     private GlobalInventory globalInventory;
     private DataStore dataStore;
@@ -131,17 +133,28 @@ public final class SharedEverythingPlugin extends JavaPlugin {
         if (!pendingInventorySnapshots.add(playerId)) {
             return;
         }
+        scheduleInventorySnapshotAttempt(player, playerId);
+    }
+
+    private void scheduleInventorySnapshotAttempt(Player player, UUID playerId) {
         getServer().getScheduler().runTaskLater(this, () -> {
-            pendingInventorySnapshots.remove(playerId);
             if (!inventoryEnabled) {
+                pendingInventorySnapshots.remove(playerId);
                 return;
             }
             if (!player.isOnline()) {
+                pendingInventorySnapshots.remove(playerId);
                 return;
             }
             if (isSyncing(player)) {
+                scheduleInventorySnapshotAttempt(player, playerId);
                 return;
             }
+            if (hasCursorItem(player)) {
+                scheduleInventorySnapshotAttempt(player, playerId);
+                return;
+            }
+            pendingInventorySnapshots.remove(playerId);
             captureAndBroadcastInventory(player);
         }, 1L);
     }
@@ -163,6 +176,10 @@ public final class SharedEverythingPlugin extends JavaPlugin {
         }
         if (globalInventory == null) {
             globalInventory = GlobalInventory.empty();
+        }
+        if (hasCursorItem(player)) {
+            scheduleInventoryApply(player);
+            return;
         }
         beginSync(player);
         try {
@@ -227,6 +244,38 @@ public final class SharedEverythingPlugin extends JavaPlugin {
         }, 1L);
     }
 
+    private boolean hasCursorItem(Player player) {
+        ItemStack cursor = player.getOpenInventory().getCursor();
+        return cursor != null && !cursor.isEmpty() && cursor.getType() != Material.AIR;
+    }
+
+    private void scheduleInventoryApply(Player player) {
+        UUID playerId = player.getUniqueId();
+        if (!pendingInventoryApplies.add(playerId)) {
+            return;
+        }
+        scheduleInventoryApplyAttempt(player, playerId);
+    }
+
+    private void scheduleInventoryApplyAttempt(Player player, UUID playerId) {
+        getServer().getScheduler().runTaskLater(this, () -> {
+            if (!inventoryEnabled) {
+                pendingInventoryApplies.remove(playerId);
+                return;
+            }
+            if (!player.isOnline()) {
+                pendingInventoryApplies.remove(playerId);
+                return;
+            }
+            if (hasCursorItem(player)) {
+                scheduleInventoryApplyAttempt(player, playerId);
+                return;
+            }
+            pendingInventoryApplies.remove(playerId);
+            applyGlobalInventoryToPlayer(player);
+        }, 1L);
+    }
+
     private void scheduleAutosave() {
         if (autosaveTask != null) {
             autosaveTask.cancel();
@@ -261,4 +310,3 @@ public final class SharedEverythingPlugin extends JavaPlugin {
         autosaveIntervalTicks = getConfig().getInt("autosave.interval_ticks", 600);
     }
 }
-
