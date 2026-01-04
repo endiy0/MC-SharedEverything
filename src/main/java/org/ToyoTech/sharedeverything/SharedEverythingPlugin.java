@@ -1,64 +1,54 @@
 package org.ToyoTech.sharedeverything;
 
-import org.bukkit.plugin.java.JavaPlugin;
-
 import org.bukkit.Bukkit;
-import org.bukkit.Material;
-import org.bukkit.NamespacedKey;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.PluginCommand;
-import org.bukkit.entity.Player;
-import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
-import java.time.Instant;
-import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.UUID;
 
 public final class SharedEverythingPlugin extends JavaPlugin {
-    private final Map<NamespacedKey, Set<String>> globalAdvancements = new HashMap<>();
-    private final Map<UUID, Integer> syncDepth = new HashMap<>();
-    private final Set<UUID> pendingInventorySnapshots = new HashSet<>();
-    private final Set<UUID> pendingInventoryApplies = new HashSet<>();
+    private static final int TEAM_WATCH_INTERVAL_TICKS = 20;
 
-    private GlobalInventory globalInventory;
-    private DataStore dataStore;
-    private AdvancementSyncManager advancementSyncManager;
+    private final Map<String, SharedInventory> teamInventories = new HashMap<>();
+
+    private NmsBridge nmsBridge;
+    private SharedInventory sharedInventory;
+    private SharedInventoryManager inventoryManager;
+    private SharedDataStore dataStore;
+    private AdvancementShareManager advancementShareManager;
     private BukkitTask autosaveTask;
+    private BukkitTask teamWatchTask;
 
     private boolean inventoryEnabled;
-    private boolean includeEnderChest;
+    private boolean advancementEnabled;
+    private boolean announceDeath;
+    private boolean teamInventoryEnabled;
     private boolean keepInventoryOnDeath;
-    private boolean advancementsEnabled;
-    private int advancementsPollIntervalTicks;
-    private List<String> advancementExclusions = Collections.emptyList();
     private int autosaveIntervalTicks;
-    private long lastSaveEpochMillis;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
         loadConfigValues();
 
-        dataStore = new DataStore(this);
-        DataStore.LoadedData loadedData = dataStore.load();
-        globalInventory = loadedData.getGlobalInventory();
-        globalAdvancements.clear();
-        globalAdvancements.putAll(loadedData.getGlobalAdvancements());
-        lastSaveEpochMillis = loadedData.getLastSaveEpochMillis();
+        try {
+            nmsBridge = new NmsBridge();
+        } catch (IllegalStateException e) {
+            getLogger().severe("SharedEverything failed to initialize: " + e.getMessage());
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
 
-        advancementSyncManager = new AdvancementSyncManager(this, globalAdvancements);
-        advancementSyncManager.reload(advancementsEnabled, advancementsPollIntervalTicks, advancementExclusions);
-        advancementSyncManager.start();
+        sharedInventory = new SharedInventory(nmsBridge);
+        inventoryManager = new SharedInventoryManager(nmsBridge, sharedInventory, teamInventories);
+        advancementShareManager = new AdvancementShareManager();
+        dataStore = new SharedDataStore(this);
+        dataStore.load(sharedInventory, teamInventories, advancementShareManager.getSharedAdvancements());
 
-        getServer().getPluginManager().registerEvents(new InventorySyncListener(this), this);
-        getServer().getPluginManager().registerEvents(new AdvancementSyncListener(this, advancementSyncManager), this);
+        getServer().getPluginManager().registerEvents(new SharedEverythingListener(this), this);
 
         SharedEverythingCommand commandHandler = new SharedEverythingCommand(this);
         PluginCommand command = getCommand("sharedeverything");
@@ -68,212 +58,143 @@ public final class SharedEverythingPlugin extends JavaPlugin {
         }
 
         scheduleAutosave();
+        startTeamWatcher();
 
-        runNextTick(() -> {
-            if (inventoryEnabled) {
-                applyGlobalInventoryToAllPlayers();
+        for (var player : Bukkit.getOnlinePlayers()) {
+            inventoryManager.updateInventory(player, inventoryEnabled, teamInventoryEnabled);
+            if (advancementEnabled) {
+                advancementShareManager.applyToPlayer(player);
             }
-            if (advancementsEnabled) {
-                advancementSyncManager.applyGlobalAdvancementsToAllPlayers();
-            }
-        });
+        }
     }
 
     @Override
     public void onDisable() {
-        saveData(true);
+        saveSharedData(true);
         if (autosaveTask != null) {
             autosaveTask.cancel();
             autosaveTask = null;
         }
-        if (advancementSyncManager != null) {
-            advancementSyncManager.stop();
+        if (teamWatchTask != null) {
+            teamWatchTask.cancel();
+            teamWatchTask = null;
+        }
+        if (inventoryManager != null) {
+            for (var player : Bukkit.getOnlinePlayers()) {
+                inventoryManager.applyPersonalInventory(player);
+                inventoryManager.clearPlayerState(player);
+            }
         }
     }
 
-    void reloadPlugin() {
+    void reloadPlugin(CommandSender sender) {
         reloadConfig();
         loadConfigValues();
-        advancementSyncManager.reload(advancementsEnabled, advancementsPollIntervalTicks, advancementExclusions);
-        advancementSyncManager.start();
         scheduleAutosave();
-
-        if (inventoryEnabled) {
-            applyGlobalInventoryToAllPlayers();
+        startTeamWatcher();
+        inventoryManager.applyToAllPlayers(inventoryEnabled, teamInventoryEnabled);
+        if (advancementEnabled) {
+            advancementShareManager.applyToAllPlayers();
         }
-        if (advancementsEnabled) {
-            advancementSyncManager.applyGlobalAdvancementsToAllPlayers();
+        sender.sendMessage("SharedEverything reloaded.");
+    }
+
+    void setInventoryEnabled(boolean enabled) {
+        inventoryEnabled = enabled;
+        getConfig().set("inventory", enabled);
+        saveConfig();
+        inventoryManager.applyToAllPlayers(inventoryEnabled, teamInventoryEnabled);
+    }
+
+    void setAdvancementEnabled(boolean enabled) {
+        advancementEnabled = enabled;
+        getConfig().set("advancement", enabled);
+        saveConfig();
+        if (advancementEnabled) {
+            advancementShareManager.applyToAllPlayers();
         }
     }
 
-    boolean isInventorySyncEnabled() {
-        return inventoryEnabled;
+    void setAnnounceDeathEnabled(boolean enabled) {
+        announceDeath = enabled;
+        getConfig().set("announcedeath", enabled);
+        saveConfig();
     }
 
-    boolean isAdvancementSyncEnabled() {
-        return advancementsEnabled;
+    void setTeamInventoryEnabled(boolean enabled) {
+        teamInventoryEnabled = enabled;
+        getConfig().set("teaminventory", enabled);
+        saveConfig();
+        inventoryManager.applyToAllPlayers(inventoryEnabled, teamInventoryEnabled);
     }
 
-    boolean shouldKeepInventoryOnDeath() {
-        return keepInventoryOnDeath;
+    void setKeepInventoryOnDeath(boolean enabled) {
+        keepInventoryOnDeath = enabled;
+        getConfig().set("keep_inventory_on_death", enabled);
+        saveConfig();
     }
 
-    boolean isSyncing(Player player) {
-        return syncDepth.getOrDefault(player.getUniqueId(), 0) > 0;
+    void resetSharedInventory() {
+        sharedInventory.clear();
+        for (SharedInventory inventory : teamInventories.values()) {
+            inventory.clear();
+        }
+        inventoryManager.applyToAllPlayers(inventoryEnabled, teamInventoryEnabled);
     }
 
-    void scheduleInventorySnapshot(Player player) {
-        if (!inventoryEnabled) {
-            return;
-        }
-        UUID playerId = player.getUniqueId();
-        if (isSyncing(player)) {
-            return;
-        }
-        if (!pendingInventorySnapshots.add(playerId)) {
-            return;
-        }
-        scheduleInventorySnapshotAttempt(player, playerId);
-    }
-
-    private void scheduleInventorySnapshotAttempt(Player player, UUID playerId) {
-        getServer().getScheduler().runTaskLater(this, () -> {
-            if (!inventoryEnabled) {
-                pendingInventorySnapshots.remove(playerId);
-                return;
-            }
-            if (!player.isOnline()) {
-                pendingInventorySnapshots.remove(playerId);
-                return;
-            }
-            if (isSyncing(player)) {
-                scheduleInventorySnapshotAttempt(player, playerId);
-                return;
-            }
-            if (hasCursorItem(player)) {
-                scheduleInventorySnapshotAttempt(player, playerId);
-                return;
-            }
-            pendingInventorySnapshots.remove(playerId);
-            captureAndBroadcastInventory(player);
-        }, 1L);
-    }
-
-    void captureAndBroadcastInventory(Player player) {
-        if (!inventoryEnabled) {
-            return;
-        }
-        ItemStack[] fallbackEnder = globalInventory == null
-                ? new ItemStack[27]
-                : globalInventory.getEnderChestContents();
-        globalInventory = GlobalInventory.fromPlayer(player, includeEnderChest, fallbackEnder);
-        applyGlobalInventoryToAllPlayers();
-    }
-
-    void applyGlobalInventoryToPlayer(Player player) {
-        if (!inventoryEnabled) {
-            return;
-        }
-        if (globalInventory == null) {
-            globalInventory = GlobalInventory.empty();
-        }
-        if (hasCursorItem(player)) {
-            scheduleInventoryApply(player);
-            return;
-        }
-        beginSync(player);
-        try {
-            globalInventory.applyToPlayer(player, includeEnderChest);
-        } finally {
-            endSyncLater(player);
-        }
-    }
-
-    void applyGlobalInventoryToAllPlayers() {
-        if (!inventoryEnabled) {
-            return;
-        }
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            applyGlobalInventoryToPlayer(player);
-        }
-    }
-
-    void resetGlobalInventory() {
-        globalInventory = GlobalInventory.empty();
-        if (inventoryEnabled) {
-            applyGlobalInventoryToAllPlayers();
-        }
-    }
-
-    void resetGlobalAdvancements() {
-        globalAdvancements.clear();
-        if (advancementSyncManager != null) {
-            advancementSyncManager.resetPlayersAdvancements();
-        }
+    void resetAdvancements() {
+        advancementShareManager.resetAdvancements();
     }
 
     void sendStatus(CommandSender sender) {
         sender.sendMessage("SharedEverything status:");
-        sender.sendMessage("Inventory sync: " + inventoryEnabled
-                + " (ender chest: " + includeEnderChest
-                + ", keep inventory on death: " + keepInventoryOnDeath + ")");
-        sender.sendMessage("Advancement sync: " + advancementsEnabled
-                + " (poll interval ticks: " + advancementsPollIntervalTicks + ")");
-        sender.sendMessage("Online players: " + Bukkit.getOnlinePlayers().size());
-        sender.sendMessage("Last save: " + (lastSaveEpochMillis == 0L ? "never" : Instant.ofEpochMilli(lastSaveEpochMillis)));
+        sender.sendMessage("inventory: " + inventoryEnabled);
+        sender.sendMessage("advancement: " + advancementEnabled);
+        sender.sendMessage("announcedeath: " + announceDeath);
+        sender.sendMessage("teaminventory: " + teamInventoryEnabled);
+        sender.sendMessage("keep_inventory_on_death: " + keepInventoryOnDeath);
     }
 
-    void runNextTick(Runnable runnable) {
-        getServer().getScheduler().runTask(this, runnable);
-    }
-
-    private void beginSync(Player player) {
-        UUID playerId = player.getUniqueId();
-        syncDepth.merge(playerId, 1, Integer::sum);
-    }
-
-    private void endSyncLater(Player player) {
-        UUID playerId = player.getUniqueId();
-        getServer().getScheduler().runTaskLater(this, () -> {
-            syncDepth.compute(playerId, (key, value) -> {
-                if (value == null || value <= 1) {
-                    return null;
-                }
-                return value - 1;
-            });
-        }, 1L);
-    }
-
-    private boolean hasCursorItem(Player player) {
-        ItemStack cursor = player.getOpenInventory().getCursor();
-        return cursor != null && !cursor.isEmpty() && cursor.getType() != Material.AIR;
-    }
-
-    private void scheduleInventoryApply(Player player) {
-        UUID playerId = player.getUniqueId();
-        if (!pendingInventoryApplies.add(playerId)) {
+    void saveSharedData(boolean log) {
+        if (dataStore == null) {
             return;
         }
-        scheduleInventoryApplyAttempt(player, playerId);
+        dataStore.save(sharedInventory, teamInventories, advancementShareManager.getSharedAdvancements());
+        if (log) {
+            getLogger().info("Saved shared data.");
+        }
     }
 
-    private void scheduleInventoryApplyAttempt(Player player, UUID playerId) {
-        getServer().getScheduler().runTaskLater(this, () -> {
-            if (!inventoryEnabled) {
-                pendingInventoryApplies.remove(playerId);
-                return;
-            }
-            if (!player.isOnline()) {
-                pendingInventoryApplies.remove(playerId);
-                return;
-            }
-            if (hasCursorItem(player)) {
-                scheduleInventoryApplyAttempt(player, playerId);
-                return;
-            }
-            pendingInventoryApplies.remove(playerId);
-            applyGlobalInventoryToPlayer(player);
-        }, 1L);
+    NmsBridge getNmsBridge() {
+        return nmsBridge;
+    }
+
+    SharedInventoryManager getInventoryManager() {
+        return inventoryManager;
+    }
+
+    AdvancementShareManager getAdvancementShareManager() {
+        return advancementShareManager;
+    }
+
+    boolean isInventoryEnabled() {
+        return inventoryEnabled;
+    }
+
+    boolean isAdvancementEnabled() {
+        return advancementEnabled;
+    }
+
+    boolean isAnnounceDeathEnabled() {
+        return announceDeath;
+    }
+
+    boolean isTeamInventoryEnabled() {
+        return teamInventoryEnabled;
+    }
+
+    boolean shouldKeepInventoryOnDeath() {
+        return keepInventoryOnDeath;
     }
 
     private void scheduleAutosave() {
@@ -284,29 +205,23 @@ public final class SharedEverythingPlugin extends JavaPlugin {
         if (autosaveIntervalTicks <= 0) {
             return;
         }
-        autosaveTask = getServer().getScheduler().runTaskTimer(this, () -> saveData(false), autosaveIntervalTicks, autosaveIntervalTicks);
+        autosaveTask = getServer().getScheduler().runTaskTimer(this, () -> saveSharedData(false), autosaveIntervalTicks, autosaveIntervalTicks);
     }
 
-    private void saveData(boolean log) {
-        if (dataStore == null) {
-            return;
+    private void startTeamWatcher() {
+        if (teamWatchTask != null) {
+            teamWatchTask.cancel();
+            teamWatchTask = null;
         }
-        long now = System.currentTimeMillis();
-        if (dataStore.save(globalInventory, globalAdvancements, now)) {
-            lastSaveEpochMillis = now;
-            if (log) {
-                getLogger().info("Saved shared state to data.yml.");
-            }
-        }
+        teamWatchTask = getServer().getScheduler().runTaskTimer(this, new TeamInventoryWatcher(this), TEAM_WATCH_INTERVAL_TICKS, TEAM_WATCH_INTERVAL_TICKS);
     }
 
     private void loadConfigValues() {
-        inventoryEnabled = getConfig().getBoolean("sync.inventory.enabled", true);
-        includeEnderChest = getConfig().getBoolean("sync.inventory.include_ender_chest", true);
-        keepInventoryOnDeath = getConfig().getBoolean("sync.inventory.keep_inventory_on_death", true);
-        advancementsEnabled = getConfig().getBoolean("sync.advancements.enabled", true);
-        advancementsPollIntervalTicks = getConfig().getInt("sync.advancements.poll_interval_ticks", 100);
-        advancementExclusions = getConfig().getStringList("sync.advancements.exclude_namespaces_or_prefixes");
+        inventoryEnabled = getConfig().getBoolean("inventory", true);
+        advancementEnabled = getConfig().getBoolean("advancement", true);
+        announceDeath = getConfig().getBoolean("announcedeath", false);
+        teamInventoryEnabled = getConfig().getBoolean("teaminventory", false);
+        keepInventoryOnDeath = getConfig().getBoolean("keep_inventory_on_death", true);
         autosaveIntervalTicks = getConfig().getInt("autosave.interval_ticks", 600);
     }
 }

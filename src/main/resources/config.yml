@@ -1,11 +1,7 @@
-sync:
-  inventory:
-    enabled: true
-    include_ender_chest: true
-    keep_inventory_on_death: false
-  advancements:
-    enabled: true
-    poll_interval_ticks: 100
-    exclude_namespaces_or_prefixes: []
+inventory: true
+advancement: true
+announcedeath: false
+teaminventory: true
+keep_inventory_on_death: false
 autosave:
   interval_ticks: 600

@@ -19,3 +19,6 @@ run/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# VS Code
+.vscode/

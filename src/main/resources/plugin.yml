@@ -6,7 +6,7 @@ commands:
   sharedeverything:
     description: SharedEverything admin commands
     aliases: [se]
-    usage: /<command> <reload|reset|status>
+    usage: /<command> <inventory|advancement|announcedeath|teaminventory|keepinventory|reset|reload|status>
 permissions:
   sharedeverything.admin:
     description: Full access to SharedEverything commands
