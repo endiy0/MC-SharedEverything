@@ -8,7 +8,9 @@ import org.bukkit.inventory.ItemStack;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 final class NmsBridge {
     private final Method craftPlayerGetHandle;
@@ -139,32 +141,98 @@ final class NmsBridge {
     }
 
     private void resolveInventoryFields(Object inventory) {
-        if (itemsField != null && armorField != null && offhandField != null && compartmentsField != null) {
-            return;
-        }
         Class<?> invClass = inventory.getClass();
-        itemsField = findFieldByName(invClass, "items", nonNullListClass);
-        armorField = findFieldByName(invClass, "armor", nonNullListClass);
-        offhandField = findFieldByName(invClass, "offhand", nonNullListClass);
-        compartmentsField = findFieldByName(invClass, "compartments", List.class);
+        if (itemsField == null) {
+            itemsField = findFieldByName(invClass, "items", List.class);
+        }
+        if (armorField == null) {
+            armorField = findFieldByName(invClass, "armor", List.class);
+        }
+        if (offhandField == null) {
+            offhandField = findFieldByName(invClass, "offhand", List.class);
+        }
+        if (compartmentsField == null) {
+            compartmentsField = findFieldByName(invClass, "compartments", List.class);
+        }
 
         if (itemsField == null || armorField == null || offhandField == null) {
-            List<Field> listFields = findFieldsAssignable(invClass, nonNullListClass);
-            if (listFields.isEmpty()) {
-                throw new IllegalStateException("Failed to locate inventory item lists");
-            }
-            for (Field field : listFields) {
+            List<ListField> candidates = new ArrayList<>();
+            for (Field field : findFieldsAssignable(invClass, List.class)) {
                 try {
                     Object value = field.get(inventory);
-                    int size = castList(value).size();
-                    if (size == 36 && itemsField == null) {
-                        itemsField = field;
-                    } else if (size == 4 && armorField == null) {
-                        armorField = field;
-                    } else if (size == 1 && offhandField == null) {
-                        offhandField = field;
+                    if (!looksLikeItemList(value)) {
+                        continue;
                     }
+                    candidates.add(new ListField(field, ((List<?>) value).size()));
                 } catch (IllegalAccessException ignored) {
+                }
+            }
+            if (candidates.isEmpty()) {
+                throw new IllegalStateException("Failed to locate inventory item lists");
+            }
+            Set<Field> used = new HashSet<>();
+            if (itemsField != null) {
+                used.add(itemsField);
+            }
+            if (armorField != null) {
+                used.add(armorField);
+            }
+            if (offhandField != null) {
+                used.add(offhandField);
+            }
+            ListField max = null;
+            ListField min = null;
+            ListField size4 = null;
+            ListField size1 = null;
+            for (ListField candidate : candidates) {
+                if (used.contains(candidate.field())) {
+                    continue;
+                }
+                if (max == null || candidate.size() > max.size()) {
+                    max = candidate;
+                }
+                if (min == null || candidate.size() < min.size()) {
+                    min = candidate;
+                }
+                if (candidate.size() == 4 && size4 == null) {
+                    size4 = candidate;
+                }
+                if (candidate.size() == 1 && size1 == null) {
+                    size1 = candidate;
+                }
+            }
+            if (itemsField == null && max != null) {
+                itemsField = max.field();
+                used.add(itemsField);
+            }
+            if (offhandField == null && size1 != null && !used.contains(size1.field())) {
+                offhandField = size1.field();
+                used.add(offhandField);
+            }
+            if (armorField == null && size4 != null && !used.contains(size4.field())) {
+                armorField = size4.field();
+                used.add(armorField);
+            }
+            if (offhandField == null && min != null && !used.contains(min.field())) {
+                offhandField = min.field();
+                used.add(offhandField);
+            }
+            if (armorField == null) {
+                for (ListField candidate : candidates) {
+                    if (!used.contains(candidate.field())) {
+                        armorField = candidate.field();
+                        used.add(armorField);
+                        break;
+                    }
+                }
+            }
+            if (itemsField == null) {
+                for (ListField candidate : candidates) {
+                    if (!used.contains(candidate.field())) {
+                        itemsField = candidate.field();
+                        used.add(itemsField);
+                        break;
+                    }
                 }
             }
             if (itemsField == null || armorField == null || offhandField == null) {
@@ -232,6 +300,25 @@ final class NmsBridge {
     private List<Object> castList(Object list) {
         return (List<Object>) list;
     }
+
+    private boolean looksLikeItemList(Object value) {
+        if (!(value instanceof List<?> list) || list.isEmpty()) {
+            return false;
+        }
+        Object sample = null;
+        for (Object element : list) {
+            if (element != null) {
+                sample = element;
+                break;
+            }
+        }
+        if (sample == null) {
+            return false;
+        }
+        return emptyNmsItem.getClass().isInstance(sample);
+    }
+
+    private record ListField(Field field, int size) {}
 
     record InventoryLists(Object items, Object armor, Object offhand) {}
 }
