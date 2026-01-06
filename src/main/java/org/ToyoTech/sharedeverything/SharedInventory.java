@@ -32,6 +32,15 @@ final class SharedInventory {
         nms.fillList(offhand, new ItemStack[0], OFFHAND_SIZE);
     }
 
+    void setArmorContents(ItemStack[] armorContents) {
+        nms.fillList(armor, armorContents == null ? new ItemStack[0] : armorContents, ARMOR_SIZE);
+    }
+
+    void setOffhandItem(ItemStack offhandItem) {
+        ItemStack[] offhandArray = new ItemStack[]{offhandItem};
+        nms.fillList(offhand, offhandArray, OFFHAND_SIZE);
+    }
+
     Object getItemsList() {
         return items;
     }

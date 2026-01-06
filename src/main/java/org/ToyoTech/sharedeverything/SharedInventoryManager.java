@@ -6,6 +6,7 @@ import org.bukkit.scoreboard.Team;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 final class SharedInventoryManager {
@@ -44,6 +45,11 @@ final class SharedInventoryManager {
         savePersonalInventory(player);
         Object playerInventory = nms.getPlayerInventory(player);
         nms.setInventoryLists(playerInventory, sharedInventory.getItemsList(), sharedInventory.getArmorList(), sharedInventory.getOffhandList());
+        
+        // Manual sync for Armor/Offhand in case NMS linking failed (1.21.1+)
+        player.getInventory().setArmorContents(sharedInventory.getArmorContents());
+        player.getInventory().setItemInOffHand(sharedInventory.getOffhandItem());
+        
         inventoryStates.put(player.getUniqueId(), InventoryState.SHARED);
         teamAssignments.remove(player.getUniqueId());
         player.updateInventory();
@@ -58,6 +64,11 @@ final class SharedInventoryManager {
         SharedInventory teamInventory = teamInventories.computeIfAbsent(teamName, name -> new SharedInventory(nms));
         Object playerInventory = nms.getPlayerInventory(player);
         nms.setInventoryLists(playerInventory, teamInventory.getItemsList(), teamInventory.getArmorList(), teamInventory.getOffhandList());
+        
+        // Manual sync for Armor/Offhand
+        player.getInventory().setArmorContents(teamInventory.getArmorContents());
+        player.getInventory().setItemInOffHand(teamInventory.getOffhandItem());
+        
         inventoryStates.put(playerId, InventoryState.TEAM);
         teamAssignments.put(playerId, teamName);
         player.updateInventory();
@@ -76,6 +87,53 @@ final class SharedInventoryManager {
         }
         inventoryStates.put(playerId, InventoryState.PERSONAL);
         teamAssignments.remove(playerId);
+    }
+
+    void refreshViewers(Player source) {
+        InventoryState state = getState(source);
+        if (state == InventoryState.PERSONAL) {
+            return;
+        }
+
+        UUID sourceId = source.getUniqueId();
+        String teamName = teamAssignments.get(sourceId);
+        
+        // Update the central data model from the source player
+        SharedInventory targetInventory = sharedInventory;
+        if (state == InventoryState.TEAM && teamName != null) {
+            targetInventory = teamInventories.get(teamName);
+        }
+        
+        if (targetInventory != null) {
+            targetInventory.setArmorContents(source.getInventory().getArmorContents());
+            targetInventory.setOffhandItem(source.getInventory().getItemInOffHand());
+        }
+
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            if (p.getUniqueId().equals(sourceId)) {
+                continue;
+            }
+
+            InventoryState pState = getState(p);
+            if (pState != state) {
+                continue;
+            }
+
+            if (state == InventoryState.TEAM) {
+                String pTeam = teamAssignments.get(p.getUniqueId());
+                if (!Objects.equals(teamName, pTeam)) {
+                    continue;
+                }
+            }
+            
+            // Manual sync to viewers
+            if (targetInventory != null) {
+                p.getInventory().setArmorContents(targetInventory.getArmorContents());
+                p.getInventory().setItemInOffHand(targetInventory.getOffhandItem());
+            }
+
+            p.updateInventory();
+        }
     }
 
     void clearPlayerState(Player player) {

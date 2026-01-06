@@ -26,6 +26,7 @@ final class NmsBridge {
     private Field armorField;
     private Field offhandField;
     private Field compartmentsField;
+    private Field equipmentField;
 
     NmsBridge() {
         try {
@@ -62,9 +63,20 @@ final class NmsBridge {
     InventoryLists getInventoryLists(Object inventory) {
         resolveInventoryFields(inventory);
         try {
-            Object items = itemsField.get(inventory);
-            Object armor = armorField.get(inventory);
-            Object offhand = offhandField.get(inventory);
+            Object items = itemsField != null ? itemsField.get(inventory) : createEmptyList(36);
+            
+            Object armorSource = inventory;
+            Object offhandSource = inventory;
+            if (equipmentField != null) {
+                Object equipment = equipmentField.get(inventory);
+                if (equipment != null) {
+                    armorSource = equipment;
+                    offhandSource = equipment;
+                }
+            }
+
+            Object armor = armorField != null ? armorField.get(armorSource) : createEmptyList(4);
+            Object offhand = offhandField != null ? offhandField.get(offhandSource) : createEmptyList(1);
             return new InventoryLists(items, armor, offhand);
         } catch (IllegalAccessException e) {
             throw new IllegalStateException("Failed to read inventory lists", e);
@@ -74,9 +86,20 @@ final class NmsBridge {
     void setInventoryLists(Object inventory, Object items, Object armor, Object offhand) {
         resolveInventoryFields(inventory);
         try {
-            itemsField.set(inventory, items);
-            armorField.set(inventory, armor);
-            offhandField.set(inventory, offhand);
+            if (itemsField != null) itemsField.set(inventory, items);
+            
+            Object armorTarget = inventory;
+            Object offhandTarget = inventory;
+            if (equipmentField != null) {
+                Object equipment = equipmentField.get(inventory);
+                if (equipment != null) {
+                    armorTarget = equipment;
+                    offhandTarget = equipment;
+                }
+            }
+
+            if (armorField != null) armorField.set(armorTarget, armor);
+            if (offhandField != null) offhandField.set(offhandTarget, offhand);
         } catch (IllegalAccessException e) {
             throw new IllegalStateException("Failed to set inventory lists", e);
         }
@@ -154,22 +177,63 @@ final class NmsBridge {
         if (compartmentsField == null) {
             compartmentsField = findFieldByName(invClass, "compartments", List.class);
         }
+        
+        // Try looking in 'equipment' field if armor/offhand are missing
+        if (armorField == null || offhandField == null) {
+             try {
+                equipmentField = findFieldByName(invClass, "equipment", null);
+                
+                if (equipmentField != null) {
+                    Object equipment = equipmentField.get(inventory);
+                    if (equipment != null) {
+                         Class<?> equipmentClass = equipment.getClass();
+                         
+                         List<ListField> eqCandidates = new ArrayList<>();
+                         for (Field field : findFieldsAssignable(equipmentClass, List.class)) {
+                            try {
+                                Object value = field.get(equipment);
+                                if (looksLikeItemList(value)) {
+                                    int size = ((List<?>) value).size();
+                                    eqCandidates.add(new ListField(field, size));
+                                }
+                            } catch (Exception ignored) {}
+                         }
+                         
+                         for (ListField cand : eqCandidates) {
+                             if (armorField == null && cand.size() == 4) {
+                                 armorField = cand.field();
+                             }
+                             if (offhandField == null && cand.size() == 1) {
+                                 offhandField = cand.field();
+                             }
+                         }
+                    }
+                }
+             } catch (Exception e) {
+                 Bukkit.getLogger().warning("Error inspecting equipment field: " + e.getMessage());
+             }
+        }
 
         if (itemsField == null || armorField == null || offhandField == null) {
             List<ListField> candidates = new ArrayList<>();
+            List<String> candidateDebugInfo = new ArrayList<>();
             for (Field field : findFieldsAssignable(invClass, List.class)) {
                 try {
                     Object value = field.get(inventory);
                     if (!looksLikeItemList(value)) {
+                        candidateDebugInfo.add(field.getName() + " (size=" + (value instanceof List ? ((List<?>) value).size() : "null") + ", ignored)");
                         continue;
                     }
-                    candidates.add(new ListField(field, ((List<?>) value).size()));
+                    int size = ((List<?>) value).size();
+                    candidates.add(new ListField(field, size));
+                    candidateDebugInfo.add(field.getName() + " (size=" + size + ", accepted)");
                 } catch (IllegalAccessException ignored) {
                 }
             }
             if (candidates.isEmpty()) {
-                throw new IllegalStateException("Failed to locate inventory item lists");
+                Bukkit.getLogger().severe("No candidate inventory fields found in " + invClass.getName());
             }
+
             Set<Field> used = new HashSet<>();
             if (itemsField != null) {
                 used.add(itemsField);
@@ -235,18 +299,27 @@ final class NmsBridge {
                     }
                 }
             }
+            
             if (itemsField == null || armorField == null || offhandField == null) {
-                throw new IllegalStateException("Failed to resolve inventory list fields");
+                if (itemsField == null) {
+                    Bukkit.getLogger().warning("Could not find main inventory items field! This is a serious issue.");
+                } else {
+                    Bukkit.getLogger().info("Some inventory sub-lists (Armor/Offhand) not found in Inventory class. This is expected on Minecraft 1.21.1+; using Bukkit API fallback.");
+                }
             }
         }
-        if (compartmentsField == null) {
+        
+        if (compartmentsField == null && itemsField != null && armorField != null && offhandField != null) {
             for (Field field : findFieldsAssignable(invClass, List.class)) {
                 try {
                     Object value = field.get(inventory);
                     if (value instanceof List<?> list && list.size() >= 3) {
                         Object items = itemsField.get(inventory);
-                        Object armor = armorField.get(inventory);
-                        Object offhand = offhandField.get(inventory);
+                        Object armorSource = (equipmentField != null && equipmentField.get(inventory) != null) ? equipmentField.get(inventory) : inventory;
+                        Object offhandSource = (equipmentField != null && equipmentField.get(inventory) != null) ? equipmentField.get(inventory) : inventory;
+                        
+                        Object armor = armorField.get(armorSource);
+                        Object offhand = offhandField.get(offhandSource);
                         if (list.contains(items) && list.contains(armor) && list.contains(offhand)) {
                             compartmentsField = field;
                             break;
@@ -270,7 +343,7 @@ final class NmsBridge {
         while (current != null) {
             try {
                 Field field = current.getDeclaredField(name);
-                if (fieldType.isAssignableFrom(field.getType())) {
+                if (fieldType == null || fieldType.isAssignableFrom(field.getType())) {
                     field.setAccessible(true);
                     return field;
                 }
