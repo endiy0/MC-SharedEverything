@@ -1,7 +1,9 @@
 package org.ToyoTech.sharedeverything;
 
 import org.bukkit.Bukkit;
+import org.bukkit.Material;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.scoreboard.Team;
 
 import java.util.HashMap;
@@ -105,8 +107,15 @@ final class SharedInventoryManager {
         }
         
         if (targetInventory != null) {
-            targetInventory.setArmorContents(source.getInventory().getArmorContents());
-            targetInventory.setOffhandItem(source.getInventory().getItemInOffHand());
+            ItemStack[] sourceArmor = source.getInventory().getArmorContents();
+            if (!isSame(targetInventory.getArmorContents(), sourceArmor)) {
+                targetInventory.setArmorContents(sourceArmor);
+            }
+
+            ItemStack sourceOffhand = source.getInventory().getItemInOffHand();
+            if (!isSame(targetInventory.getOffhandItem(), sourceOffhand)) {
+                targetInventory.setOffhandItem(sourceOffhand);
+            }
         }
 
         for (Player p : Bukkit.getOnlinePlayers()) {
@@ -128,12 +137,41 @@ final class SharedInventoryManager {
             
             // Manual sync to viewers
             if (targetInventory != null) {
-                p.getInventory().setArmorContents(targetInventory.getArmorContents());
-                p.getInventory().setItemInOffHand(targetInventory.getOffhandItem());
+                ItemStack[] targetArmor = targetInventory.getArmorContents();
+                if (!isSame(p.getInventory().getArmorContents(), targetArmor)) {
+                    p.getInventory().setArmorContents(targetArmor);
+                }
+
+                ItemStack targetOffhand = targetInventory.getOffhandItem();
+                if (!isSame(p.getInventory().getItemInOffHand(), targetOffhand)) {
+                    p.getInventory().setItemInOffHand(targetOffhand);
+                }
+            }
+
+            // Skip update if player is holding an item (prevent disappearing items bug)
+            ItemStack cursor = p.getItemOnCursor();
+            if (cursor != null && cursor.getType() != Material.AIR) {
+                continue;
             }
 
             p.updateInventory();
         }
+    }
+
+    private boolean isSame(ItemStack[] a, ItemStack[] b) {
+        if (a == null || b == null) return a == b;
+        if (a.length != b.length) return false;
+        for (int i = 0; i < a.length; i++) {
+            if (!isSame(a[i], b[i])) return false;
+        }
+        return true;
+    }
+
+    private boolean isSame(ItemStack a, ItemStack b) {
+        if (a == null || b == null) {
+            return (a == null || a.getType().isAir()) && (b == null || b.getType().isAir());
+        }
+        return a.equals(b);
     }
 
     void clearPlayerState(Player player) {
