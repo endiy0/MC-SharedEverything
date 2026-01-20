@@ -1,0 +1,13 @@
+name: sharedeverything
+version: '1.0-SNAPSHOT'
+main: org.ToyoTech.sharedeverything.SharedEverythingPlugin
+api-version: '1.21'
+commands:
+  sharedeverything:
+    description: SharedEverything admin commands
+    aliases: [se]
+    usage: /<command> <inventory|advancement|announcedeath|teaminventory|keepinventory|reset|reload|status>
+permissions:
+  sharedeverything.admin:
+    description: Full access to SharedEverything commands
+    default: op

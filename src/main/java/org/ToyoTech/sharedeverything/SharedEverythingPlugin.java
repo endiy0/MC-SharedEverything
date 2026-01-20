@@ -13,9 +13,13 @@ public final class SharedEverythingPlugin extends JavaPlugin {
     private static final int TEAM_WATCH_INTERVAL_TICKS = 20;
 
     private final Map<String, SharedInventory> teamInventories = new HashMap<>();
+    private final Map<String, SharedArmor> teamArmors = new HashMap<>();
+    private final Map<String, SharedOffHand> teamOffHands = new HashMap<>();
 
     private NmsBridge nmsBridge;
     private SharedInventory sharedInventory;
+    private SharedArmor sharedArmor;
+    private SharedOffHand sharedOffHand;
     private SharedInventoryManager inventoryManager;
     private SharedDataStore dataStore;
     private AdvancementShareManager advancementShareManager;
@@ -43,10 +47,23 @@ public final class SharedEverythingPlugin extends JavaPlugin {
         }
 
         sharedInventory = new SharedInventory(nmsBridge);
-        inventoryManager = new SharedInventoryManager(nmsBridge, sharedInventory, teamInventories);
+        
+        if (nmsBridge.isUsingEquipmentMap()) {
+            Object sharedEquipmentMap = nmsBridge.createEquipmentMap();
+            sharedArmor = new SharedArmor(nmsBridge, sharedEquipmentMap);
+            sharedOffHand = new SharedOffHand(nmsBridge, sharedEquipmentMap);
+            getLogger().info("Using shared equipment map for 1.21+ support.");
+        } else {
+            sharedArmor = new SharedArmor(nmsBridge);
+            sharedOffHand = new SharedOffHand(nmsBridge);
+        }
+
+        inventoryManager = new SharedInventoryManager(nmsBridge, sharedInventory, sharedArmor, sharedOffHand, 
+                                                      teamInventories, teamArmors, teamOffHands);
+        
         advancementShareManager = new AdvancementShareManager();
         dataStore = new SharedDataStore(this);
-        dataStore.load(sharedInventory, teamInventories, advancementShareManager.getSharedAdvancements());
+        dataStore.load(sharedInventory, sharedArmor, sharedOffHand, teamInventories, teamArmors, teamOffHands, advancementShareManager.getSharedAdvancements());
 
         getServer().getPluginManager().registerEvents(new SharedEverythingListener(this), this);
 
@@ -136,8 +153,16 @@ public final class SharedEverythingPlugin extends JavaPlugin {
 
     void resetSharedInventory() {
         sharedInventory.clear();
+        sharedArmor.clear();
+        sharedOffHand.clear();
         for (SharedInventory inventory : teamInventories.values()) {
             inventory.clear();
+        }
+        for (SharedArmor armor : teamArmors.values()) {
+            armor.clear();
+        }
+        for (SharedOffHand offHand : teamOffHands.values()) {
+            offHand.clear();
         }
         inventoryManager.applyToAllPlayers(inventoryEnabled, teamInventoryEnabled);
     }
@@ -159,7 +184,7 @@ public final class SharedEverythingPlugin extends JavaPlugin {
         if (dataStore == null) {
             return;
         }
-        dataStore.save(sharedInventory, teamInventories, advancementShareManager.getSharedAdvancements());
+        dataStore.save(sharedInventory, sharedArmor, sharedOffHand, teamInventories, teamArmors, teamOffHands, advancementShareManager.getSharedAdvancements());
         if (log) {
             getLogger().info("Saved shared data.");
         }

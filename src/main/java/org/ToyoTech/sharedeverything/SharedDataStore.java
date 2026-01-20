@@ -32,15 +32,21 @@ final class SharedDataStore {
         teamsDir = new File(dataFolder, "teams");
     }
 
-    void load(SharedInventory sharedInventory, Map<String, SharedInventory> teamInventories, Set<NamespacedKey> advancements) {
+    void load(SharedInventory sharedInventory, SharedArmor sharedArmor, SharedOffHand sharedOffHand,
+              Map<String, SharedInventory> teamInventories, Map<String, SharedArmor> teamArmors, Map<String, SharedOffHand> teamOffHands,
+              Set<NamespacedKey> advancements) {
         if (!inventoryFile.exists()) {
             sharedInventory.clear();
+            sharedArmor.clear();
+            sharedOffHand.clear();
         } else {
             FileConfiguration inventoryConfig = YamlConfiguration.loadConfiguration(inventoryFile);
             ItemStack[] items = deserializeItems(inventoryConfig.getMapList("items"), STORAGE_SIZE);
             ItemStack[] armor = deserializeItems(inventoryConfig.getMapList("armor"), ARMOR_SIZE);
             ItemStack[] offhand = deserializeItems(inventoryConfig.getMapList("offhand"), OFFHAND_SIZE);
-            sharedInventory.load(items, armor, offhand.length > 0 ? offhand[0] : null);
+            sharedInventory.load(items);
+            sharedArmor.load(armor);
+            sharedOffHand.load(offhand.length > 0 ? offhand[0] : null);
         }
 
         if (advancementFile.exists()) {
@@ -63,23 +69,45 @@ final class SharedDataStore {
                     ItemStack[] items = deserializeItems(config.getMapList("items"), STORAGE_SIZE);
                     ItemStack[] armor = deserializeItems(config.getMapList("armor"), ARMOR_SIZE);
                     ItemStack[] offhand = deserializeItems(config.getMapList("offhand"), OFFHAND_SIZE);
+                    
                     SharedInventory teamInventory = new SharedInventory(plugin.getNmsBridge());
-                    teamInventory.load(items, armor, offhand.length > 0 ? offhand[0] : null);
+                    teamInventory.load(items);
                     teamInventories.put(teamName, teamInventory);
+
+                    SharedArmor teamArmor;
+                    SharedOffHand teamOffHand;
+
+                    if (plugin.getNmsBridge().isUsingEquipmentMap()) {
+                        Object sharedMap = plugin.getNmsBridge().createEquipmentMap();
+                        teamArmor = new SharedArmor(plugin.getNmsBridge(), sharedMap);
+                        teamOffHand = new SharedOffHand(plugin.getNmsBridge(), sharedMap);
+                    } else {
+                        teamArmor = new SharedArmor(plugin.getNmsBridge());
+                        teamOffHand = new SharedOffHand(plugin.getNmsBridge());
+                    }
+
+                    teamArmor.load(armor);
+                    teamInventories.put(teamName, teamInventory);
+                    teamArmors.put(teamName, teamArmor);
+
+                    teamOffHand.load(offhand.length > 0 ? offhand[0] : null);
+                    teamOffHands.put(teamName, teamOffHand);
                 }
             }
         }
     }
 
-    void save(SharedInventory sharedInventory, Map<String, SharedInventory> teamInventories, Set<NamespacedKey> advancements) {
+    void save(SharedInventory sharedInventory, SharedArmor sharedArmor, SharedOffHand sharedOffHand,
+              Map<String, SharedInventory> teamInventories, Map<String, SharedArmor> teamArmors, Map<String, SharedOffHand> teamOffHands,
+              Set<NamespacedKey> advancements) {
         if (!plugin.getDataFolder().exists() && !plugin.getDataFolder().mkdirs()) {
             plugin.getLogger().warning("Unable to create plugin data folder.");
         }
 
         FileConfiguration inventoryConfig = new YamlConfiguration();
         inventoryConfig.set("items", serializeItems(sharedInventory.getStorageContents()));
-        inventoryConfig.set("armor", serializeItems(sharedInventory.getArmorContents()));
-        inventoryConfig.set("offhand", serializeItems(new ItemStack[]{sharedInventory.getOffhandItem()}));
+        inventoryConfig.set("armor", serializeItems(sharedArmor.getContents()));
+        inventoryConfig.set("offhand", serializeItems(new ItemStack[]{sharedOffHand.getItem()}));
         saveConfig(inventoryConfig, inventoryFile, "inventory.yml");
 
         FileConfiguration advancementConfig = new YamlConfiguration();
@@ -93,13 +121,30 @@ final class SharedDataStore {
         if (!teamsDir.exists() && !teamsDir.mkdirs()) {
             plugin.getLogger().warning("Unable to create teams folder.");
         }
-        for (Map.Entry<String, SharedInventory> entry : teamInventories.entrySet()) {
+        
+        // Collect all team names
+        Set<String> teamNames = teamInventories.keySet();
+        // (Assuming all maps have same keys or we handle union, but typically they are created together)
+        
+        for (String teamName : teamNames) {
             FileConfiguration teamConfig = new YamlConfiguration();
-            SharedInventory teamInventory = entry.getValue();
-            teamConfig.set("items", serializeItems(teamInventory.getStorageContents()));
-            teamConfig.set("armor", serializeItems(teamInventory.getArmorContents()));
-            teamConfig.set("offhand", serializeItems(new ItemStack[]{teamInventory.getOffhandItem()}));
-            File teamFile = new File(teamsDir, entry.getKey() + ".yml");
+            
+            SharedInventory teamInv = teamInventories.get(teamName);
+            if (teamInv != null) {
+                teamConfig.set("items", serializeItems(teamInv.getStorageContents()));
+            }
+
+            SharedArmor teamArmor = teamArmors.get(teamName);
+            if (teamArmor != null) {
+                teamConfig.set("armor", serializeItems(teamArmor.getContents()));
+            }
+
+            SharedOffHand teamOffHand = teamOffHands.get(teamName);
+            if (teamOffHand != null) {
+                teamConfig.set("offhand", serializeItems(new ItemStack[]{teamOffHand.getItem()}));
+            }
+            
+            File teamFile = new File(teamsDir, teamName + ".yml");
             saveConfig(teamConfig, teamFile, "team inventory");
         }
     }

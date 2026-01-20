@@ -1,28 +1,35 @@
 package org.ToyoTech.sharedeverything;
 
 import org.bukkit.Bukkit;
-import org.bukkit.Material;
 import org.bukkit.entity.Player;
-import org.bukkit.inventory.ItemStack;
 import org.bukkit.scoreboard.Team;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Objects;
 import java.util.UUID;
 
 final class SharedInventoryManager {
     private final NmsBridge nms;
     private final SharedInventory sharedInventory;
+    private final SharedArmor sharedArmor;
+    private final SharedOffHand sharedOffHand;
     private final Map<String, SharedInventory> teamInventories;
+    private final Map<String, SharedArmor> teamArmors;
+    private final Map<String, SharedOffHand> teamOffHands;
     private final Map<UUID, NmsBridge.InventoryLists> personalInventories = new HashMap<>();
     private final Map<UUID, InventoryState> inventoryStates = new HashMap<>();
     private final Map<UUID, String> teamAssignments = new HashMap<>();
 
-    SharedInventoryManager(NmsBridge nms, SharedInventory sharedInventory, Map<String, SharedInventory> teamInventories) {
+    SharedInventoryManager(NmsBridge nms,
+                           SharedInventory sharedInventory, SharedArmor sharedArmor, SharedOffHand sharedOffHand,
+                           Map<String, SharedInventory> teamInventories, Map<String, SharedArmor> teamArmors, Map<String, SharedOffHand> teamOffHands) {
         this.nms = nms;
         this.sharedInventory = sharedInventory;
+        this.sharedArmor = sharedArmor;
+        this.sharedOffHand = sharedOffHand;
         this.teamInventories = teamInventories;
+        this.teamArmors = teamArmors;
+        this.teamOffHands = teamOffHands;
     }
 
     void updateInventory(Player player, boolean inventoryEnabled, boolean teamInventoryEnabled) {
@@ -46,15 +53,15 @@ final class SharedInventoryManager {
         }
         savePersonalInventory(player);
         Object playerInventory = nms.getPlayerInventory(player);
-        nms.setInventoryLists(playerInventory, sharedInventory.getItemsList(), sharedInventory.getArmorList(), sharedInventory.getOffhandList());
-        
-        // Manual sync for Armor/Offhand in case NMS linking failed (1.21.1+)
-        player.getInventory().setArmorContents(sharedInventory.getArmorContents());
-        player.getInventory().setItemInOffHand(sharedInventory.getOffhandItem());
-        
+        nms.setInventoryLists(playerInventory, player, sharedInventory.getItemsList(), sharedArmor.getList(), sharedOffHand.getList());
+
         inventoryStates.put(player.getUniqueId(), InventoryState.SHARED);
         teamAssignments.remove(player.getUniqueId());
         player.updateInventory();
+    }
+
+    void handlePlayerDeath(Player player) {
+        // NMS linking handles clearing shared inventory on death if not kept.
     }
 
     void applyTeamInventory(Player player, String teamName) {
@@ -63,14 +70,27 @@ final class SharedInventoryManager {
             return;
         }
         savePersonalInventory(player);
+        
         SharedInventory teamInventory = teamInventories.computeIfAbsent(teamName, name -> new SharedInventory(nms));
+        
+        // Ensure team armor and offhand are created together if sharing map
+        if (!teamArmors.containsKey(teamName) || !teamOffHands.containsKey(teamName)) {
+            if (nms.isUsingEquipmentMap()) {
+                Object sharedMap = nms.createEquipmentMap();
+                teamArmors.put(teamName, new SharedArmor(nms, sharedMap));
+                teamOffHands.put(teamName, new SharedOffHand(nms, sharedMap));
+            } else {
+                teamArmors.computeIfAbsent(teamName, name -> new SharedArmor(nms));
+                teamOffHands.computeIfAbsent(teamName, name -> new SharedOffHand(nms));
+            }
+        }
+        
+        SharedArmor teamArmor = teamArmors.get(teamName);
+        SharedOffHand teamOffHand = teamOffHands.get(teamName);
+
         Object playerInventory = nms.getPlayerInventory(player);
-        nms.setInventoryLists(playerInventory, teamInventory.getItemsList(), teamInventory.getArmorList(), teamInventory.getOffhandList());
-        
-        // Manual sync for Armor/Offhand
-        player.getInventory().setArmorContents(teamInventory.getArmorContents());
-        player.getInventory().setItemInOffHand(teamInventory.getOffhandItem());
-        
+        nms.setInventoryLists(playerInventory, player, teamInventory.getItemsList(), teamArmor.getList(), teamOffHand.getList());
+
         inventoryStates.put(playerId, InventoryState.TEAM);
         teamAssignments.put(playerId, teamName);
         player.updateInventory();
@@ -84,94 +104,15 @@ final class SharedInventoryManager {
         NmsBridge.InventoryLists saved = personalInventories.remove(playerId);
         if (saved != null) {
             Object playerInventory = nms.getPlayerInventory(player);
-            nms.setInventoryLists(playerInventory, saved.items(), saved.armor(), saved.offhand());
+            nms.setInventoryLists(playerInventory, player, saved.items(), saved.armor(), saved.offhand());
             player.updateInventory();
         }
         inventoryStates.put(playerId, InventoryState.PERSONAL);
         teamAssignments.remove(playerId);
     }
 
-    void refreshViewers(Player source) {
-        InventoryState state = getState(source);
-        if (state == InventoryState.PERSONAL) {
-            return;
-        }
-
-        UUID sourceId = source.getUniqueId();
-        String teamName = teamAssignments.get(sourceId);
-        
-        // Update the central data model from the source player
-        SharedInventory targetInventory = sharedInventory;
-        if (state == InventoryState.TEAM && teamName != null) {
-            targetInventory = teamInventories.get(teamName);
-        }
-        
-        if (targetInventory != null) {
-            ItemStack[] sourceArmor = source.getInventory().getArmorContents();
-            if (!isSame(targetInventory.getArmorContents(), sourceArmor)) {
-                targetInventory.setArmorContents(sourceArmor);
-            }
-
-            ItemStack sourceOffhand = source.getInventory().getItemInOffHand();
-            if (!isSame(targetInventory.getOffhandItem(), sourceOffhand)) {
-                targetInventory.setOffhandItem(sourceOffhand);
-            }
-        }
-
-        for (Player p : Bukkit.getOnlinePlayers()) {
-            if (p.getUniqueId().equals(sourceId)) {
-                continue;
-            }
-
-            InventoryState pState = getState(p);
-            if (pState != state) {
-                continue;
-            }
-
-            if (state == InventoryState.TEAM) {
-                String pTeam = teamAssignments.get(p.getUniqueId());
-                if (!Objects.equals(teamName, pTeam)) {
-                    continue;
-                }
-            }
-            
-            // Manual sync to viewers
-            if (targetInventory != null) {
-                ItemStack[] targetArmor = targetInventory.getArmorContents();
-                if (!isSame(p.getInventory().getArmorContents(), targetArmor)) {
-                    p.getInventory().setArmorContents(targetArmor);
-                }
-
-                ItemStack targetOffhand = targetInventory.getOffhandItem();
-                if (!isSame(p.getInventory().getItemInOffHand(), targetOffhand)) {
-                    p.getInventory().setItemInOffHand(targetOffhand);
-                }
-            }
-
-            // Skip update if player is holding an item (prevent disappearing items bug)
-            ItemStack cursor = p.getItemOnCursor();
-            if (cursor != null && cursor.getType() != Material.AIR) {
-                continue;
-            }
-
-            p.updateInventory();
-        }
-    }
-
-    private boolean isSame(ItemStack[] a, ItemStack[] b) {
-        if (a == null || b == null) return a == b;
-        if (a.length != b.length) return false;
-        for (int i = 0; i < a.length; i++) {
-            if (!isSame(a[i], b[i])) return false;
-        }
-        return true;
-    }
-
-    private boolean isSame(ItemStack a, ItemStack b) {
-        if (a == null || b == null) {
-            return (a == null || a.getType().isAir()) && (b == null || b.getType().isAir());
-        }
-        return a.equals(b);
+    void refreshViewers(Player player) {
+        // No manual sync needed with NMS linking
     }
 
     void clearPlayerState(Player player) {
@@ -187,17 +128,13 @@ final class SharedInventoryManager {
         }
     }
 
-    void resetSharedInventory() {
-        sharedInventory.clear();
-    }
-
     private void savePersonalInventory(Player player) {
         UUID playerId = player.getUniqueId();
         if (personalInventories.containsKey(playerId)) {
             return;
         }
         Object playerInventory = nms.getPlayerInventory(player);
-        NmsBridge.InventoryLists lists = nms.getInventoryLists(playerInventory);
+        NmsBridge.InventoryLists lists = nms.getInventoryLists(playerInventory, player);
         personalInventories.put(playerId, lists);
         inventoryStates.put(playerId, InventoryState.PERSONAL);
     }

@@ -1,0 +1,7 @@
+inventory: true
+advancement: true
+announcedeath: false
+teaminventory: true
+keep_inventory_on_death: false
+autosave:
+  interval_ticks: 600
